@@ -1,0 +1,159 @@
+Program.Sub.Preflight.Start
+Program.Sub.Preflight.End
+
+'ARC#6688 
+'	Apr 2022, Nam Le
+
+'ALEXANDRIA PRO-FAB needs a "Quantity Remaining" label printed for lot/bin records during the 'shipment process.  They currently using the Shipping Dashboard or Shipping & Receiving > Transactions > Shipments > New.  Both process take you to the same LOT/BIN screen for selecting quantities to ship. This is the screen that would need to be displayed in order to get the label that's required.
+
+'In order to produce a quantity remaining label for this process, the company option for "auto relieve lots" can not be used.  The LOT/BIN screen used at the time of creating shipments MUST be displayed and a record selected.
+
+'customer to supply the layout of the label  (dimensions and required data) prior to starting the project.
+
+'SOLUTION
+'A GAB script will be add to the SAVE HOOK 16574 on the screen LBHS133B.  The script will read in the passed BDF and check each record.  If selected = 'Y' then we will subtract Qty to Issue from Available Qty.  If the result is greater than zero, a label will be printed for that lot/bin record.  If the result is 0, no label will be printed.
+'The script should loop through all of the records in the BDF before calling to print the label. 
+
+'A Codesoft label will be created similar to the BIN to BIN label as that is what the customer is using now. (customer to provide exact layout)
+
+'Hook: 16574 
+' Shipment => Select Lot/Bin => Save Btn
+'This program checks the BDF, 
+'calculates remain inventory for shipped part
+'and printout codesoft label
+
+'need to find the codesoft label ID
+
+Program.Sub.Main.Start
+f.Intrinsic.Control.Try
+
+	v.Local.SQL.Declare(String)
+	v.Local.lCount.Declare(Long)
+	v.Local.iCounter.Declare(Long)
+	v.Local.sSO.Declare(String)
+	v.Local.sLine.Declare(String)
+	v.Local.sPart.Declare(String)
+	v.Local.fRemainInv.Declare(Float)
+	v.Local.fAvailable.Declare(Float)
+	v.Local.fIssue.Declare(Float)
+	v.Local.sLot.Declare(String)
+	v.Local.sBin.Declare(String)
+	v.Local.sHeat.Declare(String)
+	v.Local.sSelect.Declare(String)
+	v.Local.iBIRunID.Declare(Long)
+	v.Local.iLogID.Declare(Long)
+	v.Local.sPartDesc.Declare(String)
+	v.Local.sSerial.Declare(String)
+	v.Local.sRet.Declare(String)
+	v.Local.sWO.Declare(String)
+	v.Local.sWOSuffix.Declare(String)
+	V.Local.iReportID.Declare(Long,4466)
+	'passed var:
+	'000019 SO: ### => need LPad 7
+	'000022 Line: # => need LPad 2 (Rpad 1)
+	'000001 PART
+	'000003 PART DESC
+	'AUX001 BDF
+	
+	
+	'Get info
+	'---------------------------------------------
+	'get SO, Part, 
+	v.Local.sSO.Set(v.Passed.000019)
+	f.Intrinsic.String.LPad(v.Local.sSO,"0",7,v.Local.sSO)
+	v.Local.sLine.Set(v.Passed.000022)
+	f.Intrinsic.String.LPad(v.Local.sLine,"0",3,v.Local.sLine)
+	v.Local.sPart.Set(v.Passed.000001)
+	v.Local.sPartDesc.Set(v.Passed.000004)
+	
+	'get BDF
+	f.Intrinsic.BDF.Load("bdfShipLines", "AUX001")
+	f.Intrinsic.BDF.ReadRowCount("bdfShipLines", v.Local.lCount)
+	
+	f.Intrinsic.Control.If(v.Local.lCount,=,0)
+		f.Intrinsic.Control.End
+	f.Intrinsic.Control.EndIf
+	
+	'minus 1 for looping
+	f.Intrinsic.Math.Sub(v.Local.lCount,1,v.Local.lCount)
+	'---------------------------------------------
+	
+	
+	'print DT
+	'---------------------------------------------
+	f.Intrinsic.Control.If(v.DataTable.dtPrintCS.Exists)
+		f.Data.DataTable.Close("dtPrintCS")	
+	f.Intrinsic.Control.EndIf
+	f.Data.DataTable.Create("dtPrintCS", True)
+	f.Data.DataTable.AddColumn("dtPrintCS", "PART", "String","")
+	f.Data.DataTable.AddColumn("dtPrintCS", "DESCR", "String", "")
+	f.Data.DataTable.AddColumn("dtPrintCS", "BIN", "String", "")
+	f.Data.DataTable.AddColumn("dtPrintCS", "QTY_ON_LABEL", Float, 0)
+	f.Data.DataTable.AddColumn("dtPrintCS", "PO", "String", "") 'LotNum
+	f.Data.DataTable.AddColumn("dtPrintCS", "HEAT", "String", "")
+	f.Data.DataTable.AddColumn("dtPrintCS", "SERIAL", "String", "")
+	f.Data.DataTable.AddColumn("dtPrintCS", "WO", "String","")
+	f.Data.DataTable.AddColumn("dtPrintCS", "WO_SUFFIX", "String","")
+	f.Data.DataTable.AddColumn("dtPrintCS", "BIRUNID", Long, 0)
+	f.Data.DataTable.AddColumn("dtPrintCS", "USER_ID", "String","")
+	'---------------------------------------------
+	
+	'Loop and calculate remaining
+	'sum available amount
+	'sum issued amount
+	'0 Select (Y/N)		'1 Lot		'2 Bin 		'3 Heat		'4 Serial		'5 Avai		'6 Qty Issue
+	'---------------------------------------------
+	f.Intrinsic.Control.For(v.Local.iCounter,0,v.Local.lCount,1)
+		f.Intrinsic.BDF.TextMatrix("bdfShipLines", 0, v.Local.iCounter, v.Local.sSelect)
+		f.Intrinsic.BDF.TextMatrix("bdfShipLines", 1, v.Local.iCounter, v.Local.sLot)
+		f.Intrinsic.BDF.TextMatrix("bdfShipLines", 2, v.Local.iCounter, v.Local.sBin)
+		f.Intrinsic.BDF.TextMatrix("bdfShipLines", 3, v.Local.iCounter, v.Local.sHeat)
+		f.Intrinsic.BDF.TextMatrix("bdfShipLines", 4, v.Local.iCounter, v.Local.sSerial)
+		f.Intrinsic.BDF.TextMatrix("bdfShipLines", 5, v.Local.iCounter, v.Local.fAvailable)
+		f.Intrinsic.BDF.TextMatrix("bdfShipLines", 6, v.Local.iCounter, v.Local.fIssue)
+			
+		f.Intrinsic.Control.If(v.Local.sSelect.Trim,=,"Y", "AND", v.Local.fIssue,>,0)
+			f.Intrinsic.Math.Sub(v.Local.fAvailable,v.Local.fIssue,v.Local.fRemainInv)
+			f.Intrinsic.Control.If(v.Local.fRemainInv,>,0)
+				f.Data.DataTable.AddRow("dtPrintCS", "PART",v.Local.sPart.Trim, "DESCR", v.Local.sPartDesc.Trim, "BIN",v.Local.sBin, "QTY_ON_LABEL",v.Local.fRemainInv, "PO",v.Local.sLot, "HEAT",v.Local.sHeat, "SERIAL",v.Local.sSerial)
+			f.Intrinsic.Control.EndIf
+		f.Intrinsic.Control.EndIf
+			
+	f.Intrinsic.Control.Next(v.Local.iCounter)
+	'---------------------------------------------
+	
+	
+	'Gather label data
+	'WO, WO_SUFFIX, BIRUNID, USER_ID
+	'---------------------------------------------
+	f.Global.BI.GetRunID(v.Local.iBIRunID)
+	v.Local.iReportID.Set(100055) 'to be changed
+	f.Global.BI.StartLogging(v.Local.iBIRunID, v.Local.iReportID, -1,"",v.Local.iLogID)
+	f.Data.DataTable.SetValue("dtPrintCS", -1, "BIRUNID", v.Local.iBIRunID)
+	f.Data.DataTable.SetValue("dtPrintCS", -1, "USER_ID", v.Caller.User)
+	f.Global.BI.StopLogging(v.Local.iLogID)
+	
+	'find WO and WO SUFFIX
+	f.ODBC.Connection!Con.OpenCompanyConnection
+	f.Intrinsic.String.Build("select top 1 RTRIM(JOB) WO, RTRIM(SUFFIX) WO_SUFFIX from V_JOB_HEADER where RTRIM(SALES_ORDER)='{0}' and RTRIM(SALES_ORDER_LINE)='{1}'", v.Local.sSO.Trim, v.Local.sLine.Trim, v.Local.SQL)
+	f.ODBC.Connection!Con.ExecuteAndReturn(v.Local.SQL, v.Local.sRet)
+	
+	f.Intrinsic.Control.If(v.Ambient.ExecuteAndReturnEOF,=,False)
+		f.Intrinsic.String.Split(v.Local.sRet,"*!*", v.Local.sRet)
+		v.Local.sWO.Set(v.Local.sRet(0))
+		v.Local.sWOSuffix.Set(v.Local.sRet(1))
+		f.Data.DataTable.SetValue("dtPrintCS", -1, "WO", v.Local.sRet(0))
+		f.Data.DataTable.SetValue("dtPrintCS", -1, "WO_SUFFIX", v.Local.sRet(1))
+	f.Intrinsic.Control.EndIf
+	f.ODBC.Connection!Con.Close
+	'---------------------------------------------
+	
+	
+	'Print
+	f.Global.BI.PrintCodesoftLabelFromDataTable(v.Local.iBIRunID,v.Local.iLogID,"dtPrintCS","", True)
+	
+f.Intrinsic.Control.Catch
+
+	f.Intrinsic.UI.Msgbox(v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.Main.End
